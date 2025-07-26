@@ -1,6 +1,6 @@
 // app/pods-list.tsx
 import Link from 'next/link';
-import { listPods } from '../lib/k8s';
+import { listPods } from '../lib/kubernetes';
 
 export default async function PodsList() {
   // this runs on the server

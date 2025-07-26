@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input"
 import { Search, Filter } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
-import { listPods } from '../lib/k8s';
+// import { listPods } from '../lib/k8s';
 
 interface Pod {
   name: string
