@@ -158,7 +158,7 @@ export default function PodsTable({ pods }: PodsTableProps) {
   const uniqueStatuses = Array.from(new Set(pods.map((p) => p.status)))
 
   return (
-    <div className="flex gap-6 h-[calc(100vh-200px)]">
+    <div className="flex gap-6 min-h-[calc(100vh-200px)]">
       {/* Main Table */}
       <div className={`transition-all duration-500 ${selectedPod ? "w-2/3" : "w-full"}`}>
         {/* Controls */}

@@ -1,7 +1,7 @@
-import type { NextConfig } from "next";
-
-const nextConfig: NextConfig = {
-  /* config options here */
+// next.config.js
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  // no experimental.turbine or experimental.turbo keys
 };
 
-export default nextConfig;
+module.exports = nextConfig;

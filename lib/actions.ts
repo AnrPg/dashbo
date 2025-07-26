@@ -7,7 +7,8 @@ import {
   V1PodCondition 
 } from "@kubernetes/client-node";
 
-import { k8sApi } from "./kubernetes"
+import { k8sApi, kc } from "./kubernetes"
+import { CustomObjectsApi } from "@kubernetes/client-node";
 
 export interface Pod {
   name: string
@@ -19,6 +20,8 @@ export interface Pod {
   node: string
   ip: string
   createdAt: string | undefined
+  cpu: string
+  memory: string
 }
 
 export interface PodDetails extends Pod {
@@ -49,9 +52,52 @@ export interface PodDetails extends Pod {
 
 export async function getPods(): Promise<Pod[]> {
   try {
-    const response = await k8sApi.listPodForAllNamespaces()
+    const customApi = kc.makeApiClient(CustomObjectsApi);
+    const [podListResp, metricsResp] = await Promise.all([
+      k8sApi.listPodForAllNamespaces(),
+      customApi.listClusterCustomObject({
+        group:   "metrics.k8s.io",
+        version: "v1beta1",
+        plural:  "pods",
+      })
+    ]);
 
-    return response.items.map((pod) => {
+    interface PodMetric {
+      metadata: { namespace: string; name: string };
+      containers: Array<{ usage: { cpu: string; memory: string } }>;
+    }
+    const metricsBody = metricsResp.body as { items: PodMetric[] };
+    const metricsItems = metricsBody.items || [];
+    const metricsMap = new Map<string, { cpu: string; memory: string }>();
+    for (const m of metricsItems) {
+      const ns = m.metadata.namespace;
+      const name = m.metadata.name;
+      // each m.containers[i].usage.cpu, usage.memory
+      let totalCpu = 0, totalMemBytes = 0;
+      for (const c of m.containers) {
+        // CPU is in millicores (e.g. "50m")
+        const cpuStr: string = c.usage.cpu;
+        totalCpu += cpuStr.endsWith("m")
+          ? parseInt(cpuStr.slice(0, -1))
+          : parseFloat(cpuStr) * 1000;
+        // Memory is in Ki, Mi, etc.
+        const memStr: string = c.usage.memory;
+        const val = parseFloat(memStr);
+        if (memStr.endsWith("Ki")) totalMemBytes += val * 1024;
+        else if (memStr.endsWith("Mi")) totalMemBytes += val * 1024 * 1024;
+        else if (memStr.endsWith("Gi")) totalMemBytes += val * 1024 * 1024 * 1024;
+        else totalMemBytes += val;
+      }
+      metricsMap.set(
+        `${ns}/${name}`,
+        {
+          cpu: `${Math.round(totalCpu)}m`,
+          memory: `${Math.round(totalMemBytes / 1024 / 1024)}Mi`
+        }
+      );
+    }
+
+    return (podListResp.items as V1Pod[]).map((pod) => {
       const containerStatuses = pod.status?.containerStatuses || []
       const readyContainers = containerStatuses.filter((c) => c.ready).length
       const totalContainers = containerStatuses.length
@@ -59,6 +105,10 @@ export async function getPods(): Promise<Pod[]> {
 
       const createdAt = pod.metadata != undefined ? pod.metadata.creationTimestamp?.toISOString() : undefined
       const age = createdAt ? getAge(new Date(createdAt)) : "Unknown"
+
+      // lookup metrics, default to "0m"/"0Mi"
+      const key = `${pod.metadata?.namespace || "default"}/${pod.metadata?.name}`;
+      const met = metricsMap.get(key) || { cpu: "0m", memory: "0Mi" };
 
       return {
         name: pod.metadata?.name || "Unknown",
@@ -70,12 +120,14 @@ export async function getPods(): Promise<Pod[]> {
         node: pod.spec?.nodeName || "Unknown",
         ip: pod.status?.podIP || "None",
         createdAt: createdAt || "",
+        cpu: met.cpu,
+        memory: met.memory,
       }
     })
   } catch (error) {
     console.error("Error fetching pods:", error)
     // Return mock data for demo purposes
-    return getMockPods()
+    return []
   }
 }
 
@@ -86,6 +138,38 @@ export async function getPodDetails(name: string): Promise<PodDetails> {
 
   const namespace = pod.metadata?.namespace ?? "default";
 
+  const customApi = kc.makeApiClient(CustomObjectsApi);
+  const metricsResp = await customApi.listNamespacedCustomObject({
+    group:     "metrics.k8s.io",
+    version:   "v1beta1",
+    namespace,               // target the same namespace
+    plural:    "pods",
+  });
+
+  interface PodMetric {
+    metadata: { namespace: string; name: string };
+    containers: Array<{ usage: { cpu: string; memory: string } }>;
+  }
+  const body = metricsResp.body as { items: PodMetric[] };
+  const podMetric = body.items.find((m) => m.metadata.name === name);
+  let cpu = "0m", memory = "0Mi";
+  if (podMetric) {
+    let totalCpu = 0, totalMemBytes = 0;
+    for (const c of podMetric.containers) {
+      const cpuStr = c.usage.cpu;
+      totalCpu += cpuStr.endsWith("m")
+        ? parseInt(cpuStr.slice(0, -1), 10)
+        : parseFloat(cpuStr) * 1000;
+      const memStr = c.usage.memory;
+      const val = parseFloat(memStr);
+      if (memStr.endsWith("Ki")) totalMemBytes += val * 1024;
+      else if (memStr.endsWith("Mi")) totalMemBytes += val * 1024 ** 2;
+      else if (memStr.endsWith("Gi")) totalMemBytes += val * 1024 ** 3;
+      else totalMemBytes += val;
+    }
+    cpu = `${Math.round(totalCpu)}m`;
+    memory = `${Math.round(totalMemBytes / 1024 ** 2)}Mi`;
+  }
   // NOTE: use the object signature for listNamespacedEvent
   const eventList = (await k8sApi.listNamespacedEvent({ namespace })).items;
   const podEvents = eventList
@@ -150,6 +234,8 @@ export async function getPodDetails(name: string): Promise<PodDetails> {
     containers,
     conditions,
     events: podEvents,
+    cpu,
+    memory,
   };
 }
 
@@ -163,130 +249,4 @@ function getAge(createdAt: Date): string {
   if (diffDays > 0) return `${diffDays}d`
   if (diffHours > 0) return `${diffHours}h`
   return `${diffMinutes}m`
-}
-
-// Mock data for demo purposes
-function getMockPods(): Pod[] {
-  return [
-    {
-      name: "nginx-deployment-7d8b49557f-x2k9m",
-      namespace: "default",
-      status: "Running",
-      ready: "1/1",
-      restarts: 0,
-      age: "2d",
-      node: "worker-node-1",
-      ip: "10.244.1.15",
-      createdAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
-    },
-    {
-      name: "redis-master-6b8b4f4c4-9h7k2",
-      namespace: "default",
-      status: "Running",
-      ready: "1/1",
-      restarts: 1,
-      age: "5h",
-      node: "worker-node-2",
-      ip: "10.244.2.8",
-      createdAt: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString(),
-    },
-    {
-      name: "postgres-db-5f7b8c9d-3m4n5",
-      namespace: "database",
-      status: "Running",
-      ready: "1/1",
-      restarts: 0,
-      age: "1d",
-      node: "worker-node-1",
-      ip: "10.244.1.22",
-      createdAt: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
-    },
-    {
-      name: "api-server-deployment-8k9l-p6q7r",
-      namespace: "api",
-      status: "Pending",
-      ready: "0/1",
-      restarts: 3,
-      age: "10m",
-      node: "worker-node-3",
-      ip: "",
-      createdAt: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
-    },
-  ]
-}
-
-function getMockPodDetails(name: string): PodDetails {
-  const basePod = getMockPods().find((p) => p.name === name) || getMockPods()[0]
-
-  return {
-    ...basePod,
-    labels: {
-      app: "nginx",
-      version: "v1.0.0",
-      environment: "production",
-    },
-    annotations: {
-      "deployment.kubernetes.io/revision": "1",
-      "kubectl.kubernetes.io/last-applied-configuration": '{"apiVersion":"apps/v1","kind":"Deployment"...}',
-    },
-    containers: [
-      {
-        name: "nginx",
-        image: "nginx:1.21.0",
-        ready: true,
-        restartCount: 0,
-        state: "running",
-      },
-    ],
-    conditions: [
-      {
-        type: "Initialized",
-        status: "True",
-        lastTransitionTime: new Date(Date.now() - 60000).toISOString(),
-        reason: "PodCompleted",
-      },
-      {
-        type: "Ready",
-        status: "True",
-        lastTransitionTime: new Date(Date.now() - 30000).toISOString(),
-        reason: "ContainersReady",
-      },
-      {
-        type: "PodScheduled",
-        status: "True",
-        lastTransitionTime: new Date(Date.now() - 120000).toISOString(),
-        reason: "PodScheduled",
-      },
-    ],
-    events: [
-      {
-        type: "Normal",
-        reason: "Scheduled",
-        message: "Successfully assigned default/nginx-deployment-7d8b49557f-x2k9m to worker-node-1",
-        firstTimestamp: new Date(Date.now() - 120000).toISOString(),
-        count: 1,
-      },
-      {
-        type: "Normal",
-        reason: "Pulled",
-        message: 'Container image "nginx:1.21.0" already present on machine',
-        firstTimestamp: new Date(Date.now() - 90000).toISOString(),
-        count: 1,
-      },
-      {
-        type: "Normal",
-        reason: "Created",
-        message: "Created container nginx",
-        firstTimestamp: new Date(Date.now() - 60000).toISOString(),
-        count: 1,
-      },
-      {
-        type: "Normal",
-        reason: "Started",
-        message: "Started container nginx",
-        firstTimestamp: new Date(Date.now() - 30000).toISOString(),
-        count: 1,
-      },
-    ],
-  }
 }
