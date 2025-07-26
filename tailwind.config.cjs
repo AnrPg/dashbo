@@ -1,8 +1,8 @@
-// tailwind.config.ts
-import { type Config } from "tailwindcss";
+// tailwind.config.mjs
 import animatePlugin from "tailwindcss-animate";
 
-const config: Config = {
+/** @type {import('tailwindcss').Config} */
+const config = {
   content: [
     "./app/**/*.{js,ts,jsx,tsx}",
     "./components/**/*.{js,ts,jsx,tsx}",
@@ -14,9 +14,7 @@ const config: Config = {
       },
     },
   },
-  // use the simple string form rather than a one-element array
   darkMode: "class",
-  // import the plugin rather than require()
   plugins: [animatePlugin],
 };
 

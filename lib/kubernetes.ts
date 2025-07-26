@@ -17,3 +17,5 @@ export async function getPod(namespace: string, name: string): Promise<V1Pod> {
   const pod = await api.readNamespacedPod({ namespace, name });
   return pod; // direct V1Pod result
 }
+
+export const k8sApi = kc.makeApiClient(CoreV1Api);

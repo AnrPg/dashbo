@@ -1,5 +1,12 @@
 "use server"
 
+import { 
+  V1Pod, 
+  CoreV1Event,
+  V1ContainerStatus, 
+  V1PodCondition 
+} from "@kubernetes/client-node";
+
 import { k8sApi } from "./kubernetes"
 
 export interface Pod {
@@ -11,7 +18,7 @@ export interface Pod {
   age: string
   node: string
   ip: string
-  createdAt: string
+  createdAt: string | undefined
 }
 
 export interface PodDetails extends Pod {
@@ -44,13 +51,13 @@ export async function getPods(): Promise<Pod[]> {
   try {
     const response = await k8sApi.listPodForAllNamespaces()
 
-    return response.body.items.map((pod) => {
+    return response.items.map((pod) => {
       const containerStatuses = pod.status?.containerStatuses || []
       const readyContainers = containerStatuses.filter((c) => c.ready).length
       const totalContainers = containerStatuses.length
       const restarts = containerStatuses.reduce((sum, c) => sum + (c.restartCount || 0), 0)
 
-      const createdAt = pod.metadata?.creationTimestamp
+      const createdAt = pod.metadata != undefined ? pod.metadata.creationTimestamp?.toISOString() : undefined
       const age = createdAt ? getAge(new Date(createdAt)) : "Unknown"
 
       return {
@@ -73,74 +80,77 @@ export async function getPods(): Promise<Pod[]> {
 }
 
 export async function getPodDetails(name: string): Promise<PodDetails> {
-  try {
-    // In a real implementation, you'd need to know the namespace
-    // For now, we'll search across all namespaces
-    const podsResponse = await k8sApi.listPodForAllNamespaces()
-    const pod = podsResponse.body.items.find((p) => p.metadata?.name === name)
+  const pods = (await k8sApi.listPodForAllNamespaces()).items;
+  const pod = pods.find((p: V1Pod) => p.metadata?.name === name);
+  if (!pod) throw new Error(`Pod ${name} not found`);
 
-    if (!pod) {
-      throw new Error(`Pod ${name} not found`)
-    }
+  const namespace = pod.metadata?.namespace ?? "default";
 
-    const namespace = pod.metadata?.namespace || "default"
+  // NOTE: use the object signature for listNamespacedEvent
+  const eventList = (await k8sApi.listNamespacedEvent({ namespace })).items;
+  const podEvents = eventList
+    .filter((event: CoreV1Event) => event.involvedObject?.name === name)
+    .map((event: CoreV1Event) => ({
+      type: event.type ?? "Normal",
+      reason: event.reason ?? "Unknown",
+      message: event.message ?? "",
+      firstTimestamp: event.firstTimestamp
+        ? (event.firstTimestamp instanceof Date
+            ? event.firstTimestamp.toISOString()
+            : event.firstTimestamp)
+        : "",
+      count: event.count ?? 0,
+    }));
 
-    // Get events for this pod
-    const eventsResponse = await k8sApi.listNamespacedEvent(namespace)
-    const podEvents = eventsResponse.body.items
-      .filter((event) => event.involvedObject?.name === name)
-      .map((event) => ({
-        type: event.type || "Normal",
-        reason: event.reason || "Unknown",
-        message: event.message || "",
-        firstTimestamp: event.firstTimestamp || "",
-        count: event.count || 1,
-      }))
+  const containerStatuses: V1ContainerStatus[] = pod.status?.containerStatuses ?? [];
+  const readyContainers = containerStatuses.filter((c) => c.ready).length;
+  const totalContainers = containerStatuses.length;
+  const restarts = containerStatuses.reduce(
+    (sum: number, c: V1ContainerStatus) => sum + (c.restartCount ?? 0),
+    0
+  );
+  
+  const createdAt = pod.metadata != undefined ? pod.metadata.creationTimestamp?.toISOString() : ""
+  const age = createdAt ? getAge(new Date(createdAt)) : "Unknown";
 
-    const containerStatuses = pod.status?.containerStatuses || []
-    const readyContainers = containerStatuses.filter((c) => c.ready).length
-    const totalContainers = containerStatuses.length
-    const restarts = containerStatuses.reduce((sum, c) => sum + (c.restartCount || 0), 0)
+  const conditions = (pod.status?.conditions ?? []).map(
+    (condition: V1PodCondition) => ({
+      type: condition.type,
+      status: condition.status,
+      // always a string in the K8s API, so safe
+      lastTransitionTime: condition.lastTransitionTime ?.toISOString() ?? "",
+      reason: condition.reason,
+      message: condition.message,
+    })
+  );
 
-    const createdAt = pod.metadata?.creationTimestamp
-    const age = createdAt ? getAge(new Date(createdAt)) : "Unknown"
-
+  const containers = (pod.spec?.containers ?? []).map((container, i) => {
+    const status = containerStatuses[i];
     return {
-      name: pod.metadata?.name || "Unknown",
-      namespace: pod.metadata?.namespace || "default",
-      status: pod.status?.phase || "Unknown",
-      ready: `${readyContainers}/${totalContainers}`,
-      restarts,
-      age,
-      node: pod.spec?.nodeName || "Unknown",
-      ip: pod.status?.podIP || "None",
-      createdAt: createdAt || "",
-      labels: pod.metadata?.labels || {},
-      annotations: pod.metadata?.annotations || {},
-      containers: (pod.spec?.containers || []).map((container, index) => {
-        const status = containerStatuses[index]
-        return {
-          name: container.name,
-          image: container.image || "Unknown",
-          ready: status?.ready || false,
-          restartCount: status?.restartCount || 0,
-          state: status?.state ? Object.keys(status.state)[0] : "unknown",
-        }
-      }),
-      conditions: (pod.status?.conditions || []).map((condition) => ({
-        type: condition.type,
-        status: condition.status,
-        lastTransitionTime: condition.lastTransitionTime || "",
-        reason: condition.reason,
-        message: condition.message,
-      })),
-      events: podEvents,
-    }
-  } catch (error) {
-    console.error("Error fetching pod details:", error)
-    // Return mock data for demo purposes
-    return getMockPodDetails(name)
-  }
+      name: container.name,
+      image: container.image ?? "Unknown",
+      ready: status?.ready ?? false,
+      restartCount: status?.restartCount ?? 0,
+      state: status?.state ? Object.keys(status.state)[0] : "unknown",
+    };
+  });
+
+  return {
+    name: pod.metadata?.name ?? "Unknown",
+    namespace,
+    status: pod.status?.phase ?? "Unknown",
+    ready: `${readyContainers}/${totalContainers}`,
+    restarts,
+    age,
+    node: pod.spec?.nodeName ?? "Unknown",
+    ip: pod.status?.podIP ?? "None",
+    createdAt,
+    labels: pod.metadata?.labels ?? {},
+    annotations: pod.metadata?.annotations ?? {},
+    containers,
+    conditions,
+    events: podEvents,
+  };
 }
 
 function getAge(createdAt: Date): string {

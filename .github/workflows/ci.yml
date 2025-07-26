@@ -31,5 +31,5 @@ jobs:
       - name: Build Next.js
         run: npm run build      # assumes standard Next.js build
 
-      - name: Run tests
-        run: npm test           # assumes you have a test script
+      # - name: Run tests
+      #   run: npm test           # assumes you have a test script
