@@ -19,7 +19,7 @@ export interface Pod {
   age: string
   node: string
   ip: string
-  createdAt: string | undefined
+  createdAt: string
   cpu: string
   memory: string
 }
@@ -194,7 +194,7 @@ export async function getPodDetails(name: string): Promise<PodDetails> {
     0
   );
   
-  const createdAt = pod.metadata != undefined ? pod.metadata.creationTimestamp?.toISOString() : ""
+  const createdAt = pod.metadata != undefined ? pod.metadata.creationTimestamp?.toISOString() : undefined
   const age = createdAt ? getAge(new Date(createdAt)) : "Unknown";
 
   const conditions = (pod.status?.conditions ?? []).map(
@@ -228,7 +228,7 @@ export async function getPodDetails(name: string): Promise<PodDetails> {
     age,
     node: pod.spec?.nodeName ?? "Unknown",
     ip: pod.status?.podIP ?? "None",
-    createdAt,
+    createdAt: createdAt || "",
     labels: pod.metadata?.labels ?? {},
     annotations: pod.metadata?.annotations ?? {},
     containers,
