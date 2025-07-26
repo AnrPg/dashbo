@@ -1,0 +1,37 @@
+name: Export Dependencies
+
+on:
+  push:
+    branches:
+      - main   
+
+permissions:
+  contents: write        # allow pushing via GITHUB_TOKEN
+
+jobs:
+  export-deps:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18
+
+      - name: Install production dependencies
+        run: npm ci --production
+
+      - name: Export dependencies to JSON
+        run: |
+          npm ls --prod --json > deps-snapshot.json
+
+      - name: Commit deps snapshot
+        uses: stefanzweifel/git-auto-commit-action@v6
+        with:
+          commit_message: "chore: update deps-snapshot.json"
+          file_pattern: "deps-snapshot.json"
+          branch: dependencies-snapshot
