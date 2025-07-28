@@ -4,7 +4,8 @@ import {
   V1Pod, 
   CoreV1Event,
   V1ContainerStatus, 
-  V1PodCondition 
+  V1PodCondition,
+  CoreV1Api 
 } from "@kubernetes/client-node";
 
 import { k8sApi, kc } from "./kubernetes"
@@ -51,16 +52,48 @@ export interface PodDetails extends Pod {
 }
 
 export async function getPods(): Promise<Pod[]> {
+
+  // console.log('$$$ K8S HOST:', process.env.KUBERNETES_SERVICE_HOST);
+  // console.log('$$$ K8S PORT:', process.env.KUBERNETES_SERVICE_PORT);
+
+
   try {
+
+    // console.log('Own properties:', Object.getOwnPropertyNames(k8sApi));
+    // // List methods inherited from prototype
+    // console.log('Prototype methods:', Object.getOwnPropertyNames(Object.getPrototypeOf(k8sApi)));
+    // // Combine both sets
+    // const allKeys = [
+    //   ...Object.getOwnPropertyNames(k8sApi),
+    //   ...Object.getOwnPropertyNames(Object.getPrototypeOf(k8sApi)),
+    // ];
+    // console.log('All members:\n', allKeys.join('\n'));
+
+    // console.log('### K8S HOST:', process.env.KUBERNETES_SERVICE_HOST);
+    // console.log('### K8S PORT:', process.env.KUBERNETES_SERVICE_PORT);
+    console.log('### Loaded server:', kc.getCurrentCluster()?.server);
+    console.log('### Loaded user:', kc.getCurrentUser()?.name);
+    console.log('### Loaded context:', kc.getCurrentContext());
+
+    const coreApi = kc.makeApiClient(CoreV1Api);
     const customApi = kc.makeApiClient(CustomObjectsApi);
+
+    // Ensure kubeconfig is loaded
+    console.log('Loaded server:', kc.getCurrentCluster()?.server);
+    if (!kc.getCurrentCluster()?.server) {
+      throw new Error('KubeConfig has no cluster.server set');
+    }
+
     const [podListResp, metricsResp] = await Promise.all([
-      k8sApi.listPodForAllNamespaces(),
+      coreApi.listPodForAllNamespaces(),
       customApi.listClusterCustomObject({
-        group:   "metrics.k8s.io",
-        version: "v1beta1",
-        plural:  "pods",
+        group: "metrics.k8s.io", 
+        version: "v1beta1",        
+        plural: "pods"            
       })
     ]);
+
+
 
     interface PodMetric {
       metadata: { namespace: string; name: string };
@@ -70,7 +103,7 @@ export async function getPods(): Promise<Pod[]> {
     const metricsItems = metricsBody.items || [];
     const metricsMap = new Map<string, { cpu: string; memory: string }>();
     for (const m of metricsItems) {
-      const ns = m.metadata.namespace;
+      const ns = m.metadata.namespace;  
       const name = m.metadata.name;
       // each m.containers[i].usage.cpu, usage.memory
       let totalCpu = 0, totalMemBytes = 0;
@@ -126,7 +159,6 @@ export async function getPods(): Promise<Pod[]> {
     })
   } catch (error) {
     console.error("Error fetching pods:", error)
-    // Return mock data for demo purposes
     return []
   }
 }
